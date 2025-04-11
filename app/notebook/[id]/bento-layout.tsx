@@ -30,6 +30,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useNotebooks } from "@/lib/notebooks-context"
 import { Input } from "@/components/ui/input"
 import UploadSourceModal from "@/components/upload-source-modal"
+import DocumentProcessingInterface from "@/components/document-processing-interface"
 
 export default function BentoLayout() {
   const router = useRouter()
@@ -45,6 +46,12 @@ export default function BentoLayout() {
   const [title, setTitle] = useState("")
   const titleInputRef = useRef<HTMLInputElement>(null)
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
+
+  // Document processing state
+  const [isProcessingDocument, setIsProcessingDocument] = useState(false)
+  const [documentFormData, setDocumentFormData] = useState<FormData | null>(null)
+  const [documentName, setDocumentName] = useState<string>("")
+  const [documentType, setDocumentType] = useState<string>("PDF")
 
   useEffect(() => {
     if (id && notebooks.length > 0) {
@@ -76,7 +83,25 @@ export default function BentoLayout() {
     }, 10)
   }
 
-  const handleSourceAdded = () => {
+  const handleSourceAdded = (formData?: FormData, fileName?: string) => {
+    if (formData) {
+      // Set document processing state
+      setDocumentFormData(formData)
+      setDocumentName(fileName || "document")
+
+      // Determine document type from file name
+      if (fileName) {
+        const extension = fileName.split(".").pop()?.toLowerCase()
+        if (extension === "pdf") setDocumentType("PDF")
+        else if (extension === "txt") setDocumentType("Text")
+        else if (extension === "md") setDocumentType("Markdown")
+        else setDocumentType("Document")
+      }
+
+      // Start processing
+      setIsProcessingDocument(true)
+    }
+
     // Update notebook with new source
     if (notebook) {
       updateNotebook({
@@ -84,6 +109,16 @@ export default function BentoLayout() {
         sources: (notebook.sources || 0) + 1,
       })
     }
+  }
+
+  const handleProcessingComplete = () => {
+    console.log("Document processing completed")
+    // You can add additional logic here if needed
+  }
+
+  const handleProcessingError = (error: string) => {
+    console.error("Document processing error:", error)
+    // You can add error handling logic here
   }
 
   if (loading || !notebook) {
@@ -232,7 +267,15 @@ export default function BentoLayout() {
 
           <ScrollArea className="flex-1 p-6">
             <div className="max-w-3xl mx-auto">
-              {notebook.sources === 0 ? (
+              {isProcessingDocument && documentFormData ? (
+                <DocumentProcessingInterface
+                  documentName={documentName}
+                  documentType={documentType}
+                  documentData={documentFormData}
+                  onProcessingComplete={handleProcessingComplete}
+                  onProcessingError={handleProcessingError}
+                />
+              ) : notebook.sources === 0 ? (
                 <div className="flex flex-col items-center justify-center h-[60vh]">
                   <motion.div
                     className="text-center max-w-md"

@@ -3,7 +3,7 @@
 import type React from "react"
 
 import { useState, useRef } from "react"
-import { Upload, LinkIcon, Globe, FileText, ArrowLeft, Copy } from "lucide-react"
+import { X, Upload, LinkIcon, Globe, FileText, Copy, ArrowLeft } from "lucide-react"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -13,10 +13,10 @@ import { motion } from "framer-motion"
 interface UploadSourceModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onSourceAdded?: () => void
+  onSourceAdded?: (formData?: FormData, fileName?: string) => void
 }
 
-type SourceType = "upload" | "link" | "text" | "website" | "copied"
+type SourceType = "upload" | "drive" | "link" | "text" | "website" | "youtube" | "copied"
 
 export default function UploadSourceModal({ open, onOpenChange, onSourceAdded }: UploadSourceModalProps) {
   const [activeView, setActiveView] = useState<SourceType>("upload")
@@ -41,13 +41,13 @@ export default function UploadSourceModal({ open, onOpenChange, onSourceAdded }:
 
     // Handle file drop logic here
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      console.log("Files dropped:", e.dataTransfer.files)
-      // Simulate source added
+      const file = e.dataTransfer.files[0]
+      const formData = new FormData()
+      formData.append("file", file)
+
       if (onSourceAdded) {
-        setTimeout(() => {
-          onSourceAdded()
-          onOpenChange(false)
-        }, 1000)
+        onSourceAdded(formData, file.name)
+        onOpenChange(false)
       }
     }
   }
@@ -56,82 +56,45 @@ export default function UploadSourceModal({ open, onOpenChange, onSourceAdded }:
     fileInputRef.current?.click()
   }
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files || files.length === 0) return
-  
+
+    const file = files[0]
     const formData = new FormData()
-    formData.append("file", files[0])
-  
-    try {
-      const res = await fetch("https://trivially-humble-anemone.ngrok-free.app/process-pdf", {
-        method: "POST",
-        body: formData,
-      })
-  
-      if (!res.ok || !res.body) {
-        console.error("Failed to get streaming response")
-        return
-      }
-  
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder("utf-8")
-  
-      let partial = ""
-  
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-  
-        const chunk = decoder.decode(value, { stream: true })
-        partial += chunk
-  
-        // Split on double newlines (SSE protocol)
-        const parts = partial.split("\n\n")
-        partial = parts.pop() || ""
-  
-        for (const part of parts) {
-          const clean = part.replace(/^data: /gm, "").trim()
-          if (clean) {
-            try {
-              const parsed = JSON.parse(clean)
-              console.log("Streamed message:", parsed)
-  
-              // Optionally: Update state/UI here based on parsed content
-            } catch (err) {
-              console.error("Failed to parse JSON from chunk", clean)
-            }
-          }
-        }
-      }
-  
-      // Done receiving all streamed content
-      onSourceAdded?.()
+    formData.append("file", file)
+
+    if (onSourceAdded) {
+      onSourceAdded(formData, file.name)
       onOpenChange(false)
-    } catch (err) {
-      console.error("Streaming error:", err)
     }
   }
 
   const handleUrlSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    // Simulate source added
-    if (onSourceAdded) {
-      setTimeout(() => {
-        onSourceAdded()
+
+    if (url.trim()) {
+      const formData = new FormData()
+      formData.append("url", url.trim())
+
+      if (onSourceAdded) {
+        onSourceAdded(formData, "Website Content")
         onOpenChange(false)
-      }, 1000)
+      }
     }
   }
 
   const handleTextSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    // Simulate source added
-    if (onSourceAdded) {
-      setTimeout(() => {
-        onSourceAdded()
+
+    if (pastedText.trim()) {
+      const formData = new FormData()
+      formData.append("text", pastedText.trim())
+
+      if (onSourceAdded) {
+        onSourceAdded(formData, "Pasted Text")
         onOpenChange(false)
-      }, 1000)
+      }
     }
   }
 
@@ -173,6 +136,14 @@ export default function UploadSourceModal({ open, onOpenChange, onSourceAdded }:
               {activeView === "copied" && <p className="text-gray-400 text-sm">Copied text</p>}
             </div>
           </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => onOpenChange(false)}
+            className="rounded-full hover:bg-gray-800"
+          >
+            <X className="w-5 h-5" />
+          </Button>
         </div>
 
         {/* Main Upload View */}
@@ -291,34 +262,33 @@ export default function UploadSourceModal({ open, onOpenChange, onSourceAdded }:
         )}
 
         {/* Paste Text View */}
-        {activeView === "text" ||
-          (activeView === "copied" && (
-            <div className="p-6">
-              <div className="flex items-center gap-2 mb-6 text-gray-300">
-                <Button variant="ghost" size="sm" className="p-0 h-auto" onClick={goBack}>
-                  <ArrowLeft className="w-5 h-5 mr-2" />
-                </Button>
-                <span>Paste copied text</span>
-              </div>
-
-              <p className="text-gray-300 mb-6">Paste your copied text below to upload as a source in ArcLM</p>
-
-              <form onSubmit={handleTextSubmit}>
-                <Textarea
-                  value={pastedText}
-                  onChange={(e) => setPastedText(e.target.value)}
-                  placeholder="Paste text here*"
-                  className="bg-gray-800 border-gray-700 mb-6 min-h-[200px] w-full"
-                />
-
-                <div className="flex justify-end">
-                  <Button type="submit" className="bg-blue-600 hover:bg-blue-700" disabled={!pastedText.trim()}>
-                    Insert
-                  </Button>
-                </div>
-              </form>
+        {(activeView === "text" || activeView === "copied") && (
+          <div className="p-6">
+            <div className="flex items-center gap-2 mb-6 text-gray-300">
+              <Button variant="ghost" size="sm" className="p-0 h-auto" onClick={goBack}>
+                <ArrowLeft className="w-5 h-5 mr-2" />
+              </Button>
+              <span>Paste copied text</span>
             </div>
-          ))}
+
+            <p className="text-gray-300 mb-6">Paste your copied text below to upload as a source in ArcLM</p>
+
+            <form onSubmit={handleTextSubmit}>
+              <Textarea
+                value={pastedText}
+                onChange={(e) => setPastedText(e.target.value)}
+                placeholder="Paste text here*"
+                className="bg-gray-800 border-gray-700 mb-6 min-h-[200px] w-full"
+              />
+
+              <div className="flex justify-end">
+                <Button type="submit" className="bg-blue-600 hover:bg-blue-700" disabled={!pastedText.trim()}>
+                  Insert
+                </Button>
+              </div>
+            </form>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   )
