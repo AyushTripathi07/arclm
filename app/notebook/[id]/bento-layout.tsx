@@ -31,6 +31,44 @@ import { useNotebooks } from "@/lib/notebooks-context"
 import { Input } from "@/components/ui/input"
 import UploadSourceModal from "@/components/upload-source-modal"
 import DocumentProcessingInterface from "@/components/document-processing-interface"
+import StaticDocumentProcessing from "@/components/static-document-processing"
+import type { ProcessingStage } from "@/components/static-document-processing"
+
+// Define types for the notebook and processing data
+interface Notebook {
+  id: string
+  title: string
+  content: string | null
+  icon: string
+  date: string
+  sources: number
+  highlight: boolean
+  lastModified: Date | null
+}
+
+interface ProcessingData {
+  documentName?: string
+  documentType?: string
+  messages?: Array<{
+    timestamp?: string
+    elapsedSeconds?: number
+  }>
+  totalTime?: number
+  notebookId?: string
+}
+
+interface ProcessingProps {
+  documentName: string
+  documentType: string
+  messages: Array<any>
+  overallProgress: number
+  currentStage: ProcessingStage | null
+  isProcessingComplete: boolean
+  processingError: string | null
+  processingStartTime: string | null
+  totalProcessingTime: number
+  notebookId: string
+}
 
 export default function BentoLayout() {
   const router = useRouter()
@@ -41,29 +79,81 @@ export default function BentoLayout() {
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true)
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true)
   const [activeTab, setActiveTab] = useState("chat")
-  const [notebook, setNotebook] = useState<any>(null)
+  const [notebook, setNotebook] = useState<Notebook | null>(null)
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [title, setTitle] = useState("")
-  const titleInputRef = useRef<HTMLInputElement>(null)
+  const titleInputRef = useRef<HTMLInputElement | null>(null)
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
 
   // Document processing state
   const [isProcessingDocument, setIsProcessingDocument] = useState(false)
   const [documentFormData, setDocumentFormData] = useState<FormData | null>(null)
-  const [documentName, setDocumentName] = useState<string>("")
-  const [documentType, setDocumentType] = useState<string>("PDF")
+  const [documentName, setDocumentName] = useState("")
+  const [documentType, setDocumentType] = useState("PDF")
 
+  // New state for API data
+  const [processingData, setProcessingData] = useState<ProcessingData | null>(null)
+  const [fetchingProcessingData, setFetchingProcessingData] = useState(false)
+  const [processingError, setProcessingError] = useState<string | null>(null)
+  const [hasFetchedOnce, setHasFetchedOnce] = useState(false)
+
+  // Fixed useEffect to prevent premature /get-state calls
   useEffect(() => {
-    if (id && notebooks.length > 0) {
+    if (id && notebooks.length > 0 && !isProcessingDocument) {
       const foundNotebook = notebooks.find((n) => n.id === id)
       if (foundNotebook) {
         setNotebook(foundNotebook)
         setTitle(foundNotebook.title)
+
+        // Only fetch if we haven't fetched before AND we're not currently processing
+        if (!hasFetchedOnce) {
+          fetchProcessingData(foundNotebook.id)
+          setHasFetchedOnce(true)
+        }
       } else {
         router.push("/")
       }
     }
-  }, [id, notebooks, router])
+  }, [id, notebooks, router, isProcessingDocument, hasFetchedOnce])
+
+  // Function to fetch data from API
+  const fetchProcessingData = async (notebookId: string) => {
+    try {
+      setFetchingProcessingData(true)
+      setProcessingError(null)
+
+      const response = await fetch("https://trivially-humble-anemone.ngrok-free.app/get-state", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ notebookId }),
+      })
+
+      const result = await response.json()
+
+      if (result.success && result.data) {
+        setProcessingData(result.data)
+        if (result.data.documentName) setDocumentName(result.data.documentName)
+        if (result.data.documentType) setDocumentType(result.data.documentType)
+      } else {
+        setProcessingData(null)
+      }
+    } catch (error) {
+      console.error("Error fetching processing data:", error)
+      setProcessingError("Failed to fetch document processing data")
+      setProcessingData(null)
+    } finally {
+      setFetchingProcessingData(false)
+    }
+  }
+
+  // Handle manual refresh button click
+  const handleRefresh = () => {
+    if (notebook?.id) {
+      fetchProcessingData(notebook.id)
+    }
+  }
 
   const handleTitleChange = async () => {
     if (notebook && title.trim() !== notebook.title) {
@@ -78,11 +168,14 @@ export default function BentoLayout() {
   const startEditingTitle = () => {
     setIsEditingTitle(true)
     setTimeout(() => {
-      titleInputRef.current?.focus()
-      titleInputRef.current?.select()
+      if (titleInputRef.current) {
+        titleInputRef.current.focus()
+        titleInputRef.current.select()
+      }
     }, 10)
   }
 
+  // Fixed handleSourceAdded to match UploadSourceModal props type
   const handleSourceAdded = (formData?: FormData, fileName?: string) => {
     if (formData) {
       // Set document processing state
@@ -98,8 +191,13 @@ export default function BentoLayout() {
         else setDocumentType("Document")
       }
 
-      // Start processing
+      // Clear previous processing data and set processing flag
+      setProcessingData(null)
       setIsProcessingDocument(true)
+
+      // When setting isProcessingDocument to true, we should also reset hasFetchedOnce
+      // to ensure we don't attempt to fetch during processing
+      setHasFetchedOnce(false)
     }
 
     // Update notebook with new source
@@ -111,20 +209,140 @@ export default function BentoLayout() {
     }
   }
 
+  // Fixed handleProcessingComplete for proper state transition
   const handleProcessingComplete = () => {
     console.log("Document processing completed")
-    // You can add additional logic here if needed
+    setIsProcessingDocument(false) // First set processing to false
+
+    // Then manually fetch the final state
+    if (notebook?.id) {
+      // Short timeout to ensure final state is saved before fetching
+      setTimeout(() => {
+        fetchProcessingData(notebook.id)
+      }, 500)
+    }
   }
 
   const handleProcessingError = (error: string) => {
     console.error("Document processing error:", error)
-    // You can add error handling logic here
+    setProcessingError(error)
+    setIsProcessingDocument(false)
+  }
+
+  // Transform API data to match StaticDocumentProcessing props
+  const transformProcessingData = (): ProcessingProps | null => {
+    if (!processingData || !processingData.documentName || !processingData.documentType || !processingData.messages) {
+      return null
+    }
+
+    // Ensure totalProcessingTime is always a number
+    const totalTime =
+      processingData.totalTime ??
+      (processingData.messages.length > 0
+        ? (processingData.messages[processingData.messages.length - 1]?.elapsedSeconds ?? 0)
+        : 0)
+
+    // Convert timestamp string to number if it exists
+    const startTimeString = processingData.messages[0]?.timestamp || null
+    const startTimeNumber = startTimeString ? new Date(startTimeString).getTime().toString() : null
+
+    return {
+      documentName: processingData.documentName,
+      documentType: processingData.documentType,
+      messages: processingData.messages,
+      overallProgress: 100,
+      currentStage: null, // Using null since we're displaying completed processing
+      isProcessingComplete: true,
+      processingError: null,
+      processingStartTime: startTimeNumber,
+      totalProcessingTime: totalTime,
+      notebookId: processingData.notebookId ?? "",
+    }
   }
 
   if (loading || !notebook) {
     return (
       <div className="min-h-screen bg-[#1e1f23] text-white flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-white"></div>
+      </div>
+    )
+  }
+
+  // Determine what to show in the main content area
+  const renderMainContent = () => {
+    // If we're currently fetching data, show loading state
+    if (fetchingProcessingData) {
+      return (
+        <div className="flex flex-col items-center justify-center h-[60vh]">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-white mb-4"></div>
+          <p className="text-gray-300">Loading document data...</p>
+        </div>
+      )
+    }
+
+    // If we're currently processing a document, show the DocumentProcessingInterface
+    if (isProcessingDocument && documentFormData) {
+      return (
+        <DocumentProcessingInterface
+          documentName={documentName}
+          documentType={documentType}
+          documentData={documentFormData}
+          onProcessingComplete={handleProcessingComplete}
+          onProcessingError={handleProcessingError}
+          notebookId={notebook?.id}
+        />
+      )
+    }
+
+    // If we have processing data from the API, show the StaticDocumentProcessing component
+    const processedData = transformProcessingData()
+    if (processedData) {
+      return <StaticDocumentProcessing {...processedData} />
+    }
+
+    // If there are no sources, show the upload prompt
+    if (notebook.sources === 0) {
+      return (
+        <div className="flex flex-col items-center justify-center h-[60vh]">
+          <motion.div
+            className="text-center max-w-md"
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ duration: 0.5 }}
+          >
+            <div className="mx-auto mb-4 w-16 h-16 bg-gray-800 rounded-full flex items-center justify-center">
+              <Upload className="w-8 h-8 text-blue-500" />
+            </div>
+            <h2 className="text-2xl font-medium mb-4">Add a source to get started</h2>
+            <p className="text-gray-400 mb-6">
+              Upload documents, websites, or other sources to start exploring with ArcLM
+            </p>
+            <Button
+              className="bg-gray-800 hover:bg-gray-700 text-white rounded-full px-6"
+              onClick={() => setUploadModalOpen(true)}
+            >
+              Upload a source
+            </Button>
+          </motion.div>
+        </div>
+      )
+    }
+
+    // Default view showing notebook content
+    return (
+      <div>
+        <div className="flex items-center gap-2 mb-4">
+          <div className="w-8 h-8 bg-gray-800 rounded-full flex items-center justify-center">
+            <Pencil className="w-4 h-4 text-blue-400" />
+          </div>
+          <span className="text-sm text-gray-400">{notebook.sources} source(s)</span>
+        </div>
+
+        <h1 className="text-3xl font-bold mb-4">{notebook.title}</h1>
+
+        <p className="text-gray-300 mb-6">
+          {notebook.content || "Start typing or add sources to begin working with your notebook."}
+        </p>
       </div>
     )
   }
@@ -257,7 +475,7 @@ export default function BentoLayout() {
                 </TabsTrigger>
               </TabsList>
               <div className="flex justify-end">
-                <Button variant="ghost" size="sm" className="gap-1 mt-2">
+                <Button variant="ghost" size="sm" className="gap-1 mt-2" onClick={handleRefresh}>
                   <RefreshCw className="w-4 h-4" />
                   Refresh
                 </Button>
@@ -266,55 +484,7 @@ export default function BentoLayout() {
           </div>
 
           <ScrollArea className="flex-1 p-6">
-            <div className="max-w-3xl mx-auto">
-              {isProcessingDocument && documentFormData ? (
-                <DocumentProcessingInterface
-                  documentName={documentName}
-                  documentType={documentType}
-                  documentData={documentFormData}
-                  onProcessingComplete={handleProcessingComplete}
-                  onProcessingError={handleProcessingError}
-                />
-              ) : notebook.sources === 0 ? (
-                <div className="flex flex-col items-center justify-center h-[60vh]">
-                  <motion.div
-                    className="text-center max-w-md"
-                    initial={{ scale: 0.9, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    transition={{ duration: 0.5 }}
-                  >
-                    <div className="mx-auto mb-4 w-16 h-16 bg-gray-800 rounded-full flex items-center justify-center">
-                      <Upload className="w-8 h-8 text-blue-500" />
-                    </div>
-                    <h2 className="text-2xl font-medium mb-4">Add a source to get started</h2>
-                    <p className="text-gray-400 mb-6">
-                      Upload documents, websites, or other sources to start exploring with ArcLM
-                    </p>
-                    <Button
-                      className="bg-gray-800 hover:bg-gray-700 text-white rounded-full px-6"
-                      onClick={() => setUploadModalOpen(true)}
-                    >
-                      Upload a source
-                    </Button>
-                  </motion.div>
-                </div>
-              ) : (
-                <div>
-                  <div className="flex items-center gap-2 mb-4">
-                    <div className="w-8 h-8 bg-gray-800 rounded-full flex items-center justify-center">
-                      <Pencil className="w-4 h-4 text-blue-400" />
-                    </div>
-                    <span className="text-sm text-gray-400">{notebook.sources} source(s)</span>
-                  </div>
-
-                  <h1 className="text-3xl font-bold mb-4">{notebook.title}</h1>
-
-                  <p className="text-gray-300 mb-6">
-                    {notebook.content || "Start typing or add sources to begin working with your notebook."}
-                  </p>
-                </div>
-              )}
-            </div>
+            <div className="max-w-3xl mx-auto">{renderMainContent()}</div>
           </ScrollArea>
 
           <div className="border-t border-gray-800 p-4">

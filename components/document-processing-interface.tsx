@@ -56,6 +56,8 @@ export interface DocumentProcessingProps {
   processingEndpoint?: string
   documentData?: FormData
   allowCancellation?: boolean
+  notebookId?: string  // Add notebookId prop
+
 }
 
 export default function DocumentProcessingInterface({
@@ -66,6 +68,8 @@ export default function DocumentProcessingInterface({
   processingEndpoint = "https://trivially-humble-anemone.ngrok-free.app/process-pdf",
   documentData,
   allowCancellation = true,
+  notebookId,  // Add notebookId to props
+
 }: DocumentProcessingProps) {
   // State management
   const [processingMessages, setProcessingMessages] = useState<ProcessingMessage[]>([])
@@ -119,6 +123,7 @@ export default function DocumentProcessingInterface({
   }, [isProcessingActive, processingStartTime, overallProgress])
 
   // Process the document and handle streaming responses
+
   const processDocument = async (formData: FormData) => {
     setIsProcessingActive(true)
     setProcessingMessages([])
@@ -128,45 +133,85 @@ export default function DocumentProcessingInterface({
     setProcessingStartTime(Date.now())
     setEstimatedTimeRemaining(null)
     setExpandedThinking({})
-
+  
     // Create a new AbortController for this request
     abortControllerRef.current = new AbortController()
     const signal = abortControllerRef.current.signal
-
+  
+    // Create a unique processing session ID for this document
+    const sessionId = `${documentName}-${Date.now()}`
+    
+    // Track all messages
+    let allMessages: ProcessingMessage[] = []
+    
+    // Function to save state to backend
+    const saveStateToBackend = async (saveMessages = allMessages) => {
+      try {
+        // Include a timestamp in filename for uniqueness
+        const timestamp = Date.now()
+        
+        await fetch("https://trivially-humble-anemone.ngrok-free.app/save-state", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            sessionId,
+            documentName,
+            documentType,
+            messages: saveMessages,
+            totalTime: processingStartTime ? Math.round((Date.now() - processingStartTime) / 1000) : 0,
+            timestamp,
+            progress: overallProgress,
+            stage: currentStage,
+            notebookId // Include notebook ID in saved state
+          }),
+        })
+      } catch (error) {
+        console.error("Failed to save state to backend:", error)
+      }
+    }
+  
+    // Save initial empty state
+    await saveStateToBackend([])
+  
     try {
       const response = await fetch(processingEndpoint, {
         method: "POST",
         body: formData,
         signal,
       })
-
+  
       if (!response.ok || !response.body) {
         throw new Error(`Server responded with status: ${response.status}`)
       }
-
+  
       const reader = response.body.getReader()
       const decoder = new TextDecoder("utf-8")
       let buffer = ""
-
+  
       // Process the stream
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-
+  
         const chunk = decoder.decode(value, { stream: true })
         buffer += chunk
-
+  
         // Split on double newlines (SSE protocol)
         const parts = buffer.split("\n\n")
         buffer = parts.pop() || ""
-
+  
+        // Track if we need to save state after processing messages
+        let shouldSaveState = false
+  
         for (const part of parts) {
           const clean = part.replace(/^data: /gm, "").trim()
           if (clean) {
             try {
               // Parse the incoming message
               const rawMessage = JSON.parse(clean)
-
+  
               // Transform to our standardized format
               const processedMessage: ProcessingMessage = {
                 category: mapMessageType(rawMessage.type),
@@ -176,28 +221,53 @@ export default function DocumentProcessingInterface({
                 stage: determineStage(rawMessage),
                 progress: calculateProgress(rawMessage),
               }
-
+  
               // Update the current stage if applicable
               if (processedMessage.stage) {
                 setCurrentStage(processedMessage.stage)
+                shouldSaveState = true
               }
-
+  
               // Update overall progress
               updateOverallProgress(processedMessage)
-
-              // Add or update the message in state
-              updateProcessingMessages(processedMessage)
+  
+              // Add message to our tracking array
+              // Handle progress message updates
+              if (processedMessage.category === MessageCategory.PROGRESS && allMessages.length > 0) {
+                const lastMsg = allMessages[allMessages.length - 1]
+                if (lastMsg.category === MessageCategory.PROGRESS && lastMsg.stage === processedMessage.stage) {
+                  // Replace the last message
+                  allMessages = [...allMessages.slice(0, -1), processedMessage]
+                } else {
+                  allMessages = [...allMessages, processedMessage]
+                }
+              } else {
+                allMessages = [...allMessages, processedMessage]
+              }
+  
+              // Update state in React
+              setProcessingMessages([...allMessages])
+  
+              // Save state for significant events
+              if (
+                shouldSaveState || 
+                processedMessage.category === MessageCategory.SUMMARY ||
+                processedMessage.category === MessageCategory.ERROR
+              ) {
+                await saveStateToBackend()
+                shouldSaveState = false
+              }
             } catch (err) {
               console.error("Failed to parse message:", clean, err)
             }
           }
         }
       }
-
+  
       // Processing completed successfully
       setIsProcessingComplete(true)
       setOverallProgress(100)
-
+  
       // Add completion message
       const completionMessage: ProcessingMessage = {
         category: MessageCategory.COMPLETION,
@@ -206,9 +276,14 @@ export default function DocumentProcessingInterface({
         timestamp: Date.now(),
         stage: ProcessingStage.COMPLETION,
       }
-
-      setProcessingMessages((prev) => [...prev, completionMessage])
-
+  
+      // Add to messages array and update state
+      allMessages = [...allMessages, completionMessage]
+      setProcessingMessages([...allMessages])
+      
+      // Save final state with completion message
+      await saveStateToBackend()
+  
       // Notify parent component
       onProcessingComplete?.()
     } catch (err) {
@@ -216,7 +291,7 @@ export default function DocumentProcessingInterface({
       if (!(err instanceof DOMException && err.name === "AbortError")) {
         const errorMessage = err instanceof Error ? err.message : "An unknown error occurred"
         setProcessingError(errorMessage)
-
+  
         // Add error message
         const errorObj: ProcessingMessage = {
           category: MessageCategory.ERROR,
@@ -224,15 +299,24 @@ export default function DocumentProcessingInterface({
           elapsedSeconds: Math.round((Date.now() - (processingStartTime || Date.now())) / 1000),
           timestamp: Date.now(),
         }
-
-        setProcessingMessages((prev) => [...prev, errorObj])
-
+  
+        // Add to messages array and update state
+        allMessages = [...allMessages, errorObj]
+        setProcessingMessages([...allMessages])
+        
+        // Save error state
+        await saveStateToBackend()
+  
         // Notify parent component
         onProcessingError?.(errorMessage)
       }
     } finally {
       setIsProcessingActive(false)
       abortControllerRef.current = null
+      
+      // Save one final state with all messages
+      // This ensures we have a complete record even if earlier saves failed
+      await saveStateToBackend()
     }
   }
 
