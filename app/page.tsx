@@ -10,6 +10,7 @@ import { motion } from "framer-motion"
 import { useState } from "react"
 import { useNotebooks } from "@/lib/notebooks-context"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Origami } from "lucide-react";
 
 export default function HomePage() {
   const router = useRouter()
@@ -37,11 +38,14 @@ export default function HomePage() {
       <header className="flex items-center justify-between p-4 border-b border-gray-800">
         <div className="flex items-center gap-2">
           <motion.div
-            className="w-8 h-8 bg-white rounded-full flex items-center justify-center"
-            whileHover={{ scale: 1.05 }}
+            className="w-8 h-8 bg-white rounded-full flex items-center justify-center shadow-lg border-2 "
+            whileHover={{
+              scale: 1.05,
+              borderColor: "rgba(20, 184, 166, 0.8)",
+            }}
             whileTap={{ scale: 0.95 }}
           >
-            <div className="w-5 h-5 bg-[#1e1f23] rounded-full"></div>
+            <Origami className="w-7 h-7 text-black" />
           </motion.div>
           <h1 className="text-xl font-medium">ArcLM</h1>
         </div>

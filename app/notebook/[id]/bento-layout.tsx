@@ -20,6 +20,8 @@ import {
   RefreshCw,
   Pencil,
   Upload,
+  Send,
+  Loader2,
 } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Button } from "@/components/ui/button"
@@ -32,6 +34,7 @@ import { Input } from "@/components/ui/input"
 import UploadSourceModal from "@/components/upload-source-modal"
 import DocumentProcessingInterface from "@/components/document-processing-interface"
 import StaticDocumentProcessing from "@/components/static-document-processing"
+import { format } from "date-fns"
 import type { ProcessingStage } from "@/components/static-document-processing"
 
 // Define types for the notebook and processing data
@@ -70,10 +73,77 @@ interface ProcessingProps {
   notebookId: string
 }
 
+// Define ChatMessage types
+interface ChatMessageType {
+  role: "user" | "assistant" | "system"
+  content: string
+  timestamp: string
+  citations?: Array<{
+    references: Array<{
+      pages: string[]
+    }>
+  }>
+}
+
+interface ChatMessageProps {
+  message: ChatMessageType
+  type: "user" | "assistant"
+  isLoading?: boolean
+}
+
+// Update the ChatMessage component to include loading state and improve styling
+// Replace the existing ChatMessage component with this improved version
+const ChatMessage = ({ message, type, isLoading = false }: ChatMessageProps) => {
+  const isUser = type === "user"
+
+  return (
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4`}>
+      <div
+        className={`rounded-lg px-4 py-2 max-w-[80%] ${
+          isUser ? "bg-blue-600 text-white rounded-br-none" : "bg-gray-700 text-white rounded-bl-none"
+        }`}
+      >
+        <p className="mb-1">{message.content}</p>
+
+        {/* Loading animation with three jumping dots */}
+        {isLoading && (
+          <div className="flex space-x-1 mt-1 items-center h-4">
+            <div
+              className="w-1.5 h-1.5 bg-white/70 rounded-full animate-bounce"
+              style={{ animationDelay: "0ms" }}
+            ></div>
+            <div
+              className="w-1.5 h-1.5 bg-white/70 rounded-full animate-bounce"
+              style={{ animationDelay: "150ms" }}
+            ></div>
+            <div
+              className="w-1.5 h-1.5 bg-white/70 rounded-full animate-bounce"
+              style={{ animationDelay: "300ms" }}
+            ></div>
+          </div>
+        )}
+
+        {message.timestamp && (
+          <p className="text-xs opacity-70 text-right">{format(new Date(message.timestamp), "h:mm a")}</p>
+        )}
+
+        {message.citations && (
+          <div className="mt-2 pt-2 border-t border-gray-600">
+            <p className="text-xs font-medium">
+              Sources: Pages{" "}
+              {message.citations.map((c) => c.references.map((r) => r.pages.join(", ")).join(", ")).join(", ")}
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function BentoLayout() {
   const router = useRouter()
   const params = useParams()
-  const { id } = params
+  const { id } = params as { id: string }
   const { notebooks, updateNotebook, loading } = useNotebooks()
 
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true)
@@ -97,6 +167,13 @@ export default function BentoLayout() {
   const [processingError, setProcessingError] = useState<string | null>(null)
   const [hasFetchedOnce, setHasFetchedOnce] = useState(false)
 
+  // Chat state
+  const [chatMessage, setChatMessage] = useState("")
+  const [chatMessages, setChatMessages] = useState<ChatMessageType[]>([])
+  const [isChatLoading, setIsChatLoading] = useState(false)
+  const [chatError, setChatError] = useState(false)
+  const messagesEndRef = useRef<HTMLDivElement | null>(null)
+
   // Fixed useEffect to prevent premature /get-state calls
   useEffect(() => {
     if (id && notebooks.length > 0 && !isProcessingDocument) {
@@ -115,6 +192,11 @@ export default function BentoLayout() {
       }
     }
   }, [id, notebooks, router, isProcessingDocument, hasFetchedOnce])
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [chatMessages])
 
   // Function to fetch data from API
   const fetchProcessingData = async (notebookId: string) => {
@@ -260,10 +342,157 @@ export default function BentoLayout() {
     }
   }
 
+  // Handle chat message submit
+  const handleChatSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!chatMessage.trim() || isChatLoading || !notebook?.id) return
+
+    const userMessage: ChatMessageType = {
+      role: "user",
+      content: chatMessage,
+      timestamp: new Date().toISOString(),
+    }
+
+    // Add user message to chat
+    setChatMessages((prev) => [...prev, userMessage])
+    setChatMessage("")
+    setIsChatLoading(true)
+    setChatError(false)
+
+    try {
+      // Format chat history for API
+      const chatHistory = chatMessages
+        .filter((msg) => msg.role === "user" || msg.role === "assistant")
+        .map((msg) => ({
+          role: msg.role,
+          content: msg.content,
+        }))
+
+      // Send request to API
+      const response = await fetch("https://trivially-humble-anemone.ngrok-free.app/chat-with-pdf", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          assistant_name: "pdf-chat-assistant",
+          message: userMessage.content,
+          chat_history: chatHistory,
+          notebookId: notebook.id,
+        }),
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        // Add assistant response to chat
+        const assistantMessage: ChatMessageType = {
+          role: "assistant",
+          content: data.response,
+          timestamp: new Date().toISOString(),
+          citations: data.citations,
+        }
+        setChatMessages((prev) => [...prev, assistantMessage])
+      } else {
+        throw new Error(data.error || "Failed to get response")
+      }
+    } catch (error) {
+      console.error("Error chatting with PDF:", error)
+      setChatError(true)
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "system",
+          content: `Error: ${error instanceof Error ? error.message : "Failed to connect to the server"}`,
+          timestamp: new Date().toISOString(),
+        },
+      ])
+    } finally {
+      setIsChatLoading(false)
+    }
+  }
+
+  // Handle retry button click
+  const handleRetry = () => {
+    if (chatMessages.length >= 2) {
+      const lastUserMessage = chatMessages.filter((msg) => msg.role === "user").pop()
+      if (lastUserMessage) {
+        setChatMessage(lastUserMessage.content)
+        // Remove the last error message and user message
+        setChatMessages((prev) => prev.slice(0, -2))
+        setChatError(false)
+      }
+    }
+  }
+
   if (loading || !notebook) {
     return (
       <div className="min-h-screen bg-[#1e1f23] text-white flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-white"></div>
+      </div>
+    )
+  }
+
+  // Update the renderChatMessages function to include loading state in messages
+  // Replace the existing renderChatMessages function with this improved version
+  const renderChatMessages = () => {
+    if (chatMessages.length === 0) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center text-center p-6">
+          <motion.div
+            className="w-16 h-16 bg-gray-800 rounded-full flex items-center justify-center mb-4"
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ duration: 0.5 }}
+          >
+            <FileText className="w-8 h-8 text-blue-400" />
+          </motion.div>
+          <h3 className="text-xl font-medium mb-2">Chat with your document</h3>
+          <p className="text-gray-400 max-w-md">
+            Ask questions about your document and get AI-powered answers with source citations.
+          </p>
+        </div>
+      )
+    }
+
+    return (
+      <div className="py-4">
+        {chatMessages.map((message, index) => (
+          <ChatMessage
+            key={index}
+            message={message}
+            type={message.role === "user" ? "user" : "assistant"}
+            isLoading={index === chatMessages.length - 1 && isChatLoading && message.role === "user"}
+          />
+        ))}
+
+        {/* Show loading message bubble when waiting for response */}
+        {isChatLoading && chatMessages.length > 0 && chatMessages[chatMessages.length - 1].role === "user" && (
+          <ChatMessage 
+            message={{ 
+              role: "assistant", 
+              content: "", 
+              timestamp: new Date().toISOString() 
+            }} 
+            type="assistant" 
+            isLoading={true} 
+          />
+        )}
+
+        {chatError && (
+          <div className="flex justify-center my-4">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRetry}
+              className="flex items-center gap-2 text-red-400 border-red-400/30 hover:bg-red-400/10"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Retry
+            </Button>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
       </div>
     )
   }
@@ -295,9 +524,28 @@ export default function BentoLayout() {
     }
 
     // If we have processing data from the API, show the StaticDocumentProcessing component
+    // and the chat interface if on chat tab
     const processedData = transformProcessingData()
     if (processedData) {
-      return <StaticDocumentProcessing {...processedData} />
+      return (
+        <>
+          <StaticDocumentProcessing {...processedData} />
+          {activeTab === "chat" && (
+            <div className="flex flex-col mt-6 border-t border-gray-700 pt-6">
+              {/* Header */}
+              <div className="flex items-center gap-2 mb-4">
+                <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
+                  <FileText className="w-4 h-4 text-white" />
+                </div>
+                <span className="text-lg font-medium">Chat with {documentName || "Document"}</span>
+              </div>
+
+              {/* Chat messages */}
+              <ScrollArea className="flex-1 mb-4 pr-4 h-80">{renderChatMessages()}</ScrollArea>
+            </div>
+          )}
+        </>
+      )
     }
 
     // If there are no sources, show the upload prompt
@@ -489,19 +737,27 @@ export default function BentoLayout() {
 
           <div className="border-t border-gray-800 p-4">
             <div className="max-w-3xl mx-auto">
-              <div className="relative">
+              <form onSubmit={handleChatSubmit} className="relative">
                 <input
                   type="text"
-                  placeholder="Start typing..."
-                  className="w-full bg-gray-800 border border-gray-700 rounded-full pl-4 pr-16 py-3 focus:outline-none focus:ring-2 focus:ring-gray-600"
+                  placeholder="Ask a question about your document..."
+                  value={chatMessage}
+                  onChange={(e) => setChatMessage(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-full pl-4 pr-16 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled={isChatLoading || !processingData}
                 />
                 <div className="absolute right-2 top-2">
                   <span className="text-xs text-gray-500 mr-2">{notebook.sources} source(s)</span>
-                  <Button size="icon" className="rounded-full bg-blue-600 hover:bg-blue-700 h-8 w-8">
-                    <ChevronRight className="w-4 h-4" />
+                  <Button
+                    type="submit"
+                    size="icon"
+                    className="rounded-full bg-blue-600 hover:bg-blue-700 h-8 w-8"
+                    disabled={!chatMessage.trim() || isChatLoading || !processingData}
+                  >
+                    {isChatLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                   </Button>
                 </div>
-              </div>
+              </form>
             </div>
           </div>
         </motion.div>

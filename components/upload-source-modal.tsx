@@ -3,7 +3,7 @@
 import type React from "react"
 
 import { useState, useRef } from "react"
-import { X, Upload, LinkIcon, Globe, FileText, Copy, ArrowLeft } from "lucide-react"
+import { Upload, LinkIcon, Globe, FileText, Copy, ArrowLeft } from "lucide-react"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -136,14 +136,14 @@ export default function UploadSourceModal({ open, onOpenChange, onSourceAdded }:
               {activeView === "copied" && <p className="text-gray-400 text-sm">Copied text</p>}
             </div>
           </div>
-          <Button
+          {/* <Button
             variant="ghost"
             size="icon"
             onClick={() => onOpenChange(false)}
             className="rounded-full hover:bg-gray-800"
           >
             <X className="w-5 h-5" />
-          </Button>
+          </Button> */}
         </div>
 
         {/* Main Upload View */}
